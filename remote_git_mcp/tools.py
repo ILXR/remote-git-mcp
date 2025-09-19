@@ -1,38 +1,37 @@
-import asyncio
+import re
 import os
 import git
 import logging
-import re
-from fastmcp import FastMCP
+import asyncio
 from pydantic import Field
-
+from fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
-# ServerCode Git Repo
+# Git Repo
 repo: git.Repo = None
-# Create the FastMCP instance
-mcp: FastMCP = FastMCP("server-code-mcp")
+# FastMCP instance
+mcp: FastMCP = FastMCP("remote-git-mcp")
 
-# 参数描述
-branch_param_description = (
-    "目标分支名称, 例如: V3.8Dev 或 V4.4Dev (不包含 origin/ 前缀), 必填"
+# parameter description
+branch_param_description = "目标分支名称, 不包含 origin/ 前缀, **必填**"
+range_param_description = (
+    "{}, list[int] 格式, 默认 {}(推荐使用默认值), 左闭右开区间, 下标从0开始"
 )
-range_param_description = "{}, list[int] 格式, 默认 {}, 左闭右开区间, 下标从0开始"
 
 
 class ResultParseUtil:
     @staticmethod
     def truncate_output(text: str, max_length: int = 50000) -> str:
         """
-        当输出文本超过指定长度时,会在合适的位置 (换行符处)截断, 并添加截断信息说明。
+        当输出文本超过指定长度时, 会在合适的位置(换行符处)截断, 并添加截断信息说明
 
         Args:
             text: 需要处理的文本
-            max_length: 最大允许长度, 默认50000字符
+            max_length: 最大允许长度
 
         Returns:
-            处理后的文本, 如果原文本超长则包含截断信息
+            处理后的文本, 如果原文本超长则包含截断信息说明
         """
         if len(text) <= max_length:
             return text
@@ -63,6 +62,7 @@ Truncated: {len(text) - len(truncated):,} characters
     def check_num_range(num_range: list[int]) -> bool:
         if (
             not num_range
+            or not isinstance(num_range, list)
             or len(num_range) != 2
             or num_range[0] < 0
             or num_range[0] > num_range[1]
@@ -79,13 +79,12 @@ Truncated: {len(text) - len(truncated):,} characters
         """
         if not ResultParseUtil.check_num_range(num_range) or num_range[0] >= total_num:
             return [0, 0]
-        if num_range[1] > total_num:
-            return [num_range[0], total_num]
+        num_range[1] = min(total_num, num_range[1])
         return num_range
 
     @staticmethod
     def parse_git_grep_result(
-        grep_output: str, num_range: list[int], file_limit: int = 20
+        grep_output: str, num_range: list[int], file_chunk_limit: int = 0
     ) -> dict:
         """
         解析'git grep -W -n --heading'命令的输出, 将其转换为结构化的数据
@@ -94,7 +93,7 @@ Truncated: {len(text) - len(truncated):,} characters
         Args:
             grep_output: git grep 命令的原始输出
             num_range: 结果范围, 格式为 [start, end], 左闭右开区间, 下标从0开始
-            file_limit: 每个文件的最大匹配数量限制, 0表示无限制
+            file_chunk_limit: 每个文件的最大匹配数量限制, 0表示无限制
 
         Returns:
             包含搜索结果的字典, 格式如下:
@@ -105,7 +104,7 @@ Truncated: {len(text) - len(truncated):,} characters
                     {
                         "file_path": "文件路径",
                         "line_range": [起始行号, 结束行号],
-                        "code": "代码内容"
+                        "content": "文件内容"
                     },
                     ...
                 ]
@@ -147,7 +146,7 @@ Truncated: {len(text) - len(truncated):,} characters
                 start_line_idx = 0  # 从第一行开始处理
 
             # 如果超过单文件匹配数量限制,跳过此块
-            if file_limit > 0 and current_file_match_count >= file_limit:
+            if file_chunk_limit > 0 and current_file_match_count >= file_chunk_limit:
                 continue
 
             code_lines = []
@@ -174,7 +173,7 @@ Truncated: {len(text) - len(truncated):,} characters
                         {
                             "file_path": current_file_path,
                             "line_range": [min_line, max_line],
-                            "code": code_content,
+                            "content": code_content,
                         }
                     )
                     # 清空缓存,准备处理下一个代码块
@@ -214,63 +213,54 @@ class GitRepoUtil:
     @staticmethod
     def init_server_code_repo():
         """
-        如果本地仓库不存在则从远程克隆, 如果已存在则拉取最新代码
-        需要设置以下环境变量:
-        - GIT_USERNAME: Git用户名
-        - GIT_TOKEN: Git访问令牌
-        - GIT_REPO_URL: Git仓库URL (去掉 https:// 前缀)
-        - GIT_REPO_PATH: 本地仓库路径
+        如果本地仓库不存在则从远程克隆, 如果已存在则拉取最新代码, 需要设置以下环境变量:
+        - GIT_REPO_URL: Git仓库URL (包含认证信息)
+        - WORKSPACE: 本地仓库路径
 
         Returns:
             git.Repo: 初始化后的Git仓库实例
-
-        Raises:
-            ValueError: 当必要的环境变量缺失时
         """
         global repo
 
         # 检查并获取必要的环境变量
-        git_username = os.getenv("GIT_USERNAME")
-        git_token = os.getenv("GIT_TOKEN")
         git_repo_url = os.getenv("GIT_REPO_URL")
-        repo_path = os.getenv("GIT_REPO_PATH")
+        workspace = os.getenv("WORKSPACE")
 
-        if not all([git_username, git_token, git_repo_url, repo_path]):
+        if not all([git_repo_url, workspace]):
             raise ValueError(
-                "Missing required environment variables: GIT_USERNAME, GIT_TOKEN, GIT_REPO_URL, GIT_REPO_PATH"
+                "Missing required environment variables: GIT_REPO_URL, WORKSPACE"
             )
 
         # 构建包含认证信息的完整仓库URL
-        repo_url = f"https://{git_username}:{git_token}@{git_repo_url}"
+        repo_url = f"{git_repo_url}"
         # 检查本地仓库是否已存在
-        if os.path.exists(repo_path):
-            logger.info(f"Server code repo already exists at {repo_path}")
-            repo = git.Repo(repo_path)
-            logger.info(f"Git fetch task finished: {repo.git.fetch('--all')}")
+        if os.path.exists(workspace):
+            logger.info(f"Git repo already exists at {workspace}")
+            repo = git.Repo(workspace)
+            repo.git.fetch("--all")
             return repo
 
         # 本地仓库不存在, 从远程克隆
-        logger.info(f"Cloning server code repo to {repo_path}")
-        repo = git.Repo.clone_from(repo_url, repo_path)
+        logger.info(f"Cloning git repo to {workspace}")
+        repo = git.Repo.clone_from(repo_url, workspace)
         return repo
 
     @staticmethod
     async def git_fetch_task(interval: int = 300):
-        """定时拉取服务器代码仓库的后台任务"""
+        """定时拉取git仓库的后台任务"""
         global repo
         while True:
             await asyncio.sleep(interval)
             if repo:
-                logger.info(f"Git fetch task finished: {repo.git.fetch('--all')}")
+                repo.git.fetch("--all")
 
 
 @mcp.tool()
 async def git_grep(
-    branch: str = Field(..., Required=True, description=branch_param_description),
+    branch: str = Field(..., description=branch_param_description),
     text_pattern: str = Field(
         ...,
-        Required=True,
-        description="要搜索的文本, 支持正则表达式, 例如: 'AvatarType' 或 'proto::AvatarType.*'",
+        description="要搜索的文本, 支持正则表达式(不能带有空格), 例如: 'AvatarType' 或 'proto::AvatarType.*'",
     ),
     file_path_pattern: str = Field(
         default="*",
@@ -282,7 +272,7 @@ async def git_grep(
     ),
 ) -> dict:
     """
-    使用 `git grep` 命令在指定分支中搜索文本模式, 支持正则表达式和文件路径过滤
+    使用 `git grep` 命令在指定分支中搜索文本模式, 支持文本正则表达式和文件路径正则表达式
 
     返回匹配的代码块, 包含文件路径、行号范围和代码内容
 
@@ -296,7 +286,7 @@ async def git_grep(
                 {
                     "file_path": "文件路径",
                     "line_range": [起始行号, 结束行号],
-                    "code": "完整代码块内容"
+                    "content": "完整代码块内容"
                 },
                 ...
             ]
@@ -360,11 +350,10 @@ async def git_grep(
 
 @mcp.tool()
 async def git_ls_tree(
-    branch: str = Field(..., Required=True, description=branch_param_description),
+    branch: str = Field(..., description=branch_param_description),
     pattern: str = Field(
         ...,
-        Required=True,
-        description="文件路径的正则表达式, 使用python正则表达式, 例如: '.*.proto' 或 'gameserver/.*.cpp', 必填",
+        description="文件路径的正则表达式, 使用python正则表达式, 例如: '.*.proto' 或 'dir_name/.*.cpp', 必填",
     ),
     num_range: list[int] = Field(
         default=[0, 100],
@@ -372,7 +361,7 @@ async def git_ls_tree(
     ),
 ) -> dict:
     """
-    使用 `git ls-tree` 命令获取指定分支的所有文件, 然后使用Python正则表达式过滤出匹配指定正则表达式的文件路径
+    使用 `git ls-tree` 命令查询指定分支的文件列表, 然后使用Python正则表达式进行过滤
 
     Returns:
 
@@ -439,10 +428,9 @@ async def git_ls_tree(
 
 @mcp.tool()
 async def git_show(
-    branch: str = Field(..., Required=True, description=branch_param_description),
+    branch: str = Field(..., description=branch_param_description),
     file_path: str = Field(
         ...,
-        Required=True,
         description="要查看的文件路径, 例如: 'path/to/file.cpp', 必填",
     ),
     line_range: list[int] = Field(

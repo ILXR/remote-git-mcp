@@ -1,7 +1,7 @@
 [project]
-name = "server-code-mcp"
+name = "remote-git-mcp"
 version = "0.1.0"
-description = "Add your description here"
+description = "Support to access remote git repo via MCP"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -10,3 +10,14 @@ dependencies = [
     "gitpython>=3.1.45",
     "pydantic>=2.0.0",
 ]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["remote_git_mcp*"]
+exclude = ["logs*"]
+
+[project.scripts]
+remote-git-mcp = "remote_git_mcp.main:cli_main"
