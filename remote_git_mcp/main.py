@@ -1,7 +1,7 @@
 import logging
 import asyncio
 import argparse
-from log import init_log
+from remote_git_mcp.log import init_log
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # load .env
 load_dotenv()
 # import mcp tools
-from tools import mcp, GitRepoUtil
+from remote_git_mcp.tools import mcp, GitRepoUtil
 
 
 def parse_args():

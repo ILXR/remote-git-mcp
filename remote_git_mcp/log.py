@@ -2,7 +2,6 @@
 import os
 import sys
 import logging
-import fastmcp
 from rich.text import Text
 from logging.handlers import TimedRotatingFileHandler
 
