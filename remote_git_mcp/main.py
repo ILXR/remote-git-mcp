@@ -1,19 +1,23 @@
-import logging
-import asyncio
 import argparse
-from remote_git_mcp.log import init_log
+import asyncio
+import logging
+
 from dotenv import load_dotenv
+
+from remote_git_mcp.log import init_log
+from remote_git_mcp.tools import GitRepoUtil, mcp
 
 logger = logging.getLogger(__name__)
 
 # load .env
 load_dotenv()
-# import mcp tools
-from remote_git_mcp.tools import mcp, GitRepoUtil
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Remote Git MCP")
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Remote Git MCP",
+    )
     parser.add_argument(
         "--transport",
         choices=["stdio", "sse", "streamable-http"],
@@ -21,15 +25,20 @@ def parse_args():
         default="stdio",
         help="Transport Protocol",
     )
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host")
-    parser.add_argument("--port", type=int, default=8999, help="Port")
-    parser.add_argument("--path", type=str, default="/mcp", help="Mcp Path")
     parser.add_argument(
-        "--quiet",
-        "-q",
+        "--host", type=str, default="0.0.0.0", help="Host (sse/streamable-http only)"
+    )
+    parser.add_argument(
+        "--port", type=int, default=8999, help="Port (sse/streamable-http only)"
+    )
+    parser.add_argument(
+        "--path", type=str, default="/mcp", help="Mcp Path (sse/streamable-http only)"
+    )
+    parser.add_argument(
+        "--debug",
         action="store_true",
         default=False,
-        help="Quiet Mode, only log to file",
+        help="Debug Mode (decide log level, default is INFO)",
     )
     return parser.parse_args()
 
@@ -37,15 +46,19 @@ def parse_args():
 async def main():
     try:
         args = parse_args()
-        init_log(enable_stdout=not args.quiet)
+        is_stdio = args.transport == "stdio"
+        init_log(
+            level=logging.DEBUG if args.debug else logging.INFO,
+            handle_stdout=not is_stdio,
+            handle_stderr=True,
+        )
 
-        logger.info("=" * 100)
-        logger.info("Initializing git repo ...")
+        logger.info(f"{'=' * 50}\nInitializing git repo ...")
         GitRepoUtil.init_server_code_repo()
         asyncio.create_task(GitRepoUtil.git_fetch_task(interval=300))
 
-        logger.info("Starting mcp server ...")
-        if args.transport == "stdio":
+        logger.info(f"Starting mcp server ...")
+        if is_stdio:
             await mcp.run_async(
                 transport=args.transport,
             )
@@ -56,11 +69,8 @@ async def main():
                 port=args.port,
                 path=args.path,
             )
-    except KeyboardInterrupt:
-        logger.info("Shutting down mcp server ...")
-        exit(0)
     except Exception:
-        logging.exception("Error when starting mcp server")
+        logging.exception("Error when running mcp server")
         exit(1)
 
 

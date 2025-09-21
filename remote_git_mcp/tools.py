@@ -1,22 +1,23 @@
-import re
-import os
-import git
-import logging
 import asyncio
-from pydantic import Field
+import logging
+import os
+import re
+
 from fastmcp import FastMCP
+from git import Repo
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
 # Git Repo
-repo: git.Repo = None
+repo: Repo = None
 # FastMCP instance
 mcp: FastMCP = FastMCP("remote-git-mcp")
 
 # parameter description
-branch_param_description = "目标分支名称, 不包含 origin/ 前缀, **必填**"
+branch_param_description = "目标分支名称, 不包含 `origin/` 前缀, **必填**"
 range_param_description = (
-    "{}, list[int] 格式, 默认 {}(推荐使用默认值), 左闭右开区间, 下标从0开始"
+    "{}, list[int] 格式, 推荐使用默认值 `{}`, 左闭右开区间, 下标从 0 开始"
 )
 
 
@@ -60,40 +61,42 @@ Truncated: {len(text) - len(truncated):,} characters
 
     @staticmethod
     def check_num_range(num_range: list[int]) -> bool:
-        if (
-            not num_range
-            or not isinstance(num_range, list)
-            or len(num_range) != 2
-            or num_range[0] < 0
-            or num_range[0] > num_range[1]
-        ):
-            return False
-        return True
+        return (
+            isinstance(num_range, list)
+            and len(num_range) == 2
+            and all(isinstance(x, int) for x in num_range)
+            and 0 <= num_range[0] <= num_range[1]
+        )
 
     @staticmethod
     def parse_result_range(total_num: int, num_range: list[int]) -> list[int]:
-        """
-        解析目标范围
-        传入的范围为目标切片区间
-        返回的范围为实际返回区间
+        """解析目标范围并返回有效的切片区间
+
+        Args:
+            total_num: 总数量
+            num_range: 目标切片区间 [start, end]
+
+        Returns:
+            list[int]: 有效的切片区间 [start, end]，如果无效则返回 [0, 0]
         """
         if not ResultParseUtil.check_num_range(num_range) or num_range[0] >= total_num:
             return [0, 0]
-        num_range[1] = min(total_num, num_range[1])
-        return num_range
+        result_range = num_range.copy()
+        result_range[1] = min(total_num, result_range[1])
+        return result_range
 
     @staticmethod
     def parse_git_grep_result(
-        grep_output: str, num_range: list[int], file_chunk_limit: int = 0
+        origin_output: str, num_range: list[int], chunk_limit_per_file: int = 0
     ) -> dict:
         """
         解析'git grep -W -n --heading'命令的输出, 将其转换为结构化的数据
         支持按文件限制匹配数量, 支持按字符长度分割代码块
 
         Args:
-            grep_output: git grep 命令的原始输出
+            origin_output: git grep 命令的原始输出
             num_range: 结果范围, 格式为 [start, end], 左闭右开区间, 下标从0开始
-            file_chunk_limit: 每个文件的最大匹配数量限制, 0表示无限制
+            chunk_limit_per_file: 每个文件的最大匹配数量限制, 0表示无限制
 
         Returns:
             包含搜索结果的字典, 格式如下:
@@ -110,11 +113,11 @@ Truncated: {len(text) - len(truncated):,} characters
                 ]
             }
         """
-        if not grep_output.strip():
+        if not origin_output.strip():
             return {"total": 0, "results": []}
 
-        # git grep --heading使用"--"作为代码段之间的分隔符
-        blocks = grep_output.split("--\n")
+        # git grep --heading 使用 `--` 作为代码段之间的分隔符
+        blocks = origin_output.split("--\n")
         results = []
         current_file_path = None
         current_file_match_count = 0  # 当前文件的匹配计数
@@ -146,7 +149,10 @@ Truncated: {len(text) - len(truncated):,} characters
                 start_line_idx = 0  # 从第一行开始处理
 
             # 如果超过单文件匹配数量限制,跳过此块
-            if file_chunk_limit > 0 and current_file_match_count >= file_chunk_limit:
+            if (
+                chunk_limit_per_file > 0
+                and current_file_match_count >= chunk_limit_per_file
+            ):
                 continue
 
             code_lines = []
@@ -216,9 +222,6 @@ class GitRepoUtil:
         如果本地仓库不存在则从远程克隆, 如果已存在则拉取最新代码, 需要设置以下环境变量:
         - GIT_REPO_URL: Git仓库URL (包含认证信息)
         - WORKSPACE: 本地仓库路径
-
-        Returns:
-            git.Repo: 初始化后的Git仓库实例
         """
         global repo
 
@@ -231,18 +234,16 @@ class GitRepoUtil:
                 "Missing required environment variables: GIT_REPO_URL, WORKSPACE"
             )
 
-        # 构建包含认证信息的完整仓库URL
-        repo_url = f"{git_repo_url}"
         # 检查本地仓库是否已存在
         if os.path.exists(workspace):
             logger.info(f"Git repo already exists at {workspace}")
-            repo = git.Repo(workspace)
+            repo = Repo(workspace)
             repo.git.fetch("--all")
             return repo
 
         # 本地仓库不存在, 从远程克隆
-        logger.info(f"Cloning git repo to {workspace}")
-        repo = git.Repo.clone_from(repo_url, workspace)
+        logger.info(f"Cloning git repo to {workspace} ...")
+        repo = Repo.clone_from(git_repo_url, workspace)
         return repo
 
     @staticmethod
@@ -252,6 +253,7 @@ class GitRepoUtil:
         while True:
             await asyncio.sleep(interval)
             if repo:
+                logger.debug(f"Fetching git repo from {repo.remote().url} ...")
                 repo.git.fetch("--all")
 
 
@@ -260,19 +262,19 @@ async def git_grep(
     branch: str = Field(..., description=branch_param_description),
     text_pattern: str = Field(
         ...,
-        description="要搜索的文本, 支持正则表达式(不能带有空格), 例如: 'AvatarType' 或 'proto::AvatarType.*'",
+        description="要搜索的文本, 使用扩展正则表达式 (ERE), 例如: `class.*A` 或 `keyword.*`",
     ),
     file_path_pattern: str = Field(
         default="*",
-        description="文件路径过滤, 使用shell正则, 例如: '*gameserver*.cpp' 或 '*.proto', 默认 * 表示所有文件",
+        description="文件路径过滤, 使用 Shell 通配符 (glob patterns), 一般推荐使用 `*` 检索所有文件",
     ),
     num_range: list[int] = Field(
-        default=[0, 100],
-        description=range_param_description.format("结果数量范围", "[0, 100]"),
+        default=[0, 50],
+        description=range_param_description.format("结果数量范围", "[0, 50]"),
     ),
 ) -> dict:
     """
-    使用 `git grep` 命令在指定分支中搜索文本模式, 支持文本正则表达式和文件路径正则表达式
+    使用 `git grep -E` 命令在指定分支中搜索文本, 支持文本正则表达式和文件路径过滤
 
     返回匹配的代码块, 包含文件路径、行号范围和代码内容
 
@@ -304,20 +306,19 @@ async def git_grep(
 
         if target_remote_branch not in remote_branches:
             return {
-                "message": f"Branch '{target_remote_branch}' not found in remote repository"
+                "message": f"Branch `{target_remote_branch}` not found in remote repository"
             }
         if not ResultParseUtil.check_num_range(num_range):
-            return {"message": "Invalid num_range"}
+            return {"message": f"Invalid num_range: {num_range}"}
 
-        # 执行 git grep 搜索, 使用以下参数:
-        # -W: 显示整个函数/代码块上下文
+        # -W: 显示整个函数/代码块上下文 (对传统语言 (C/Java/Python) 支持较好, 对现代语言支持有限, 通过 -C 弥补)
         # -H: 显示文件名
         # -n: 显示行号
         # -i: 忽略大小写
         # -I: 忽略二进制文件
         # -E: 启用扩展正则表达式语法
-        # -C 3: 显示3行上下文 (防止某些临近的单行匹配的代码被截断)
-        # --heading: 将文件名作为标题显示 (只显示一次)
+        # -C 3: 显示3行上下文
+        # --heading: 将文件名作为标题显示 (只显示一次, 方便解析)
         result = repo.git.grep(
             "-W",
             "-H",
@@ -337,7 +338,7 @@ async def git_grep(
         parsed_result = ResultParseUtil.parse_git_grep_result(result, num_range)
         if not parsed_result["results"]:
             return {
-                "message": f"No matches found for pattern '{text_pattern}' in branch '{branch}'"
+                "message": f"No matches found for pattern `{text_pattern}` in branch `{branch}`"
             }
 
         return parsed_result
@@ -353,7 +354,7 @@ async def git_ls_tree(
     branch: str = Field(..., description=branch_param_description),
     pattern: str = Field(
         ...,
-        description="文件路径的正则表达式, 使用python正则表达式, 例如: '.*.proto' 或 'dir_name/.*.cpp', 必填",
+        description="文件路径过滤, 使用 Python 正则表达式",
     ),
     num_range: list[int] = Field(
         default=[0, 100],
@@ -361,7 +362,7 @@ async def git_ls_tree(
     ),
 ) -> dict:
     """
-    使用 `git ls-tree` 命令查询指定分支的文件列表, 然后使用Python正则表达式进行过滤
+    使用 `git ls-tree` 命令查询指定分支的文件列表, 然后使用 Python 正则表达式进行过滤
 
     Returns:
 
@@ -388,12 +389,11 @@ async def git_ls_tree(
 
         if target_remote_branch not in remote_branches:
             return {
-                "message": f"Branch '{target_remote_branch}' not found in remote repository",
+                "message": f"Branch `{target_remote_branch}` not found in remote repository",
             }
         if not ResultParseUtil.check_num_range(num_range):
-            return {"message": "Invalid num_range"}
+            return {"message": f"Invalid num_range: {num_range}"}
 
-        # 获取指定分支的所有文件列表
         # -r: 递归列出所有文件
         # --name-only: 只显示文件名,不显示其他信息
         result = repo.git.ls_tree("-r", "--name-only", target_remote_branch)
@@ -409,7 +409,7 @@ async def git_ls_tree(
                 filtered_files.append(file_path)
         if not filtered_files:
             return {
-                "message": f"No files found for pattern '{pattern}' in branch '{branch}'",
+                "message": f"No files found for pattern `{pattern}` in branch `{branch}`",
             }
 
         # 计算分页
@@ -431,7 +431,7 @@ async def git_show(
     branch: str = Field(..., description=branch_param_description),
     file_path: str = Field(
         ...,
-        description="要查看的文件路径, 例如: 'path/to/file.cpp', 必填",
+        description="要查看的文件路径, 例如: `path/to/file.cpp`, 必填",
     ),
     line_range: list[int] = Field(
         default=[0, 500],
@@ -463,18 +463,17 @@ async def git_show(
 
         if target_remote_branch not in remote_branches:
             return {
-                "message": f"Branch '{target_remote_branch}' not found in remote repository",
+                "message": f"Branch `{target_remote_branch}` not found in remote repository",
             }
         if not ResultParseUtil.check_num_range(line_range):
-            return {"message": "Invalid line_range"}
+            return {"message": f"Invalid line_range: {line_range}"}
 
-        # 使用git show命令获取文件内容
         # 格式: git show branch:file_path
         result = repo.git.show(f"{target_remote_branch}:{file_path}")
         lines = result.split("\n")
         if not lines:
             return {
-                "message": f"No lines found for file '{file_path}' in branch '{branch}'",
+                "message": f"No lines found for file `{file_path}` in branch `{branch}`",
             }
 
         # 计算分页
@@ -513,12 +512,12 @@ async def git_remote_branches():
     global repo
     try:
         remote_branches = [ref.name for ref in repo.remote().refs]
-        # 过滤 origin/HEAD 分支
+        # 过滤 origin/HEAD 分支 && 清除 origin/ 前缀
         remote_branches = [
-            branch for branch in remote_branches if "origin/HEAD" not in branch
+            branch.replace("origin/", "")
+            for branch in remote_branches
+            if branch != "origin/HEAD"
         ]
-        # 清除 origin/ 前缀
-        remote_branches = [branch.replace("origin/", "") for branch in remote_branches]
         return {"total": len(remote_branches), "branches": remote_branches}
     except Exception as e:
         error_msg = f"Error when git remote branches: {str(e)}"

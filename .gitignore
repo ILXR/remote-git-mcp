@@ -9,8 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
-# Cursor
+# IDE specific files
 .cursor/
+.vscode/
 
 # .env file
 .env
