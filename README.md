@@ -9,7 +9,7 @@
 
 ## 功能特性
 
-- 🔍 **文本搜索**: 使用 `git grep` 在指定分支中搜索文本模式，支持正则表达式，对传统代码语言支持较好（返回函数/类定义等）
+- 🔍 **文本搜索**: 使用 `git grep` 在指定分支中搜索文本模式，支持正则表达式，对传统程序语言支持较好（返回整个函数/类定义的代码块）
 - 📁 **文件列表**: 使用 `git ls-tree` 查询指定分支的文件列表，支持正则表达式过滤
 - 📖 **文件内容**: 使用 `git show` 获取指定分支中文件的完整内容
 - 🌿 **分支查询**: 获取所有远程分支列表
@@ -27,7 +27,7 @@
 uvx git+https://github.com/ILXR/remote-git-mcp.git --transport stdio
 ```
 
-当使用客户端时，可以这样配置 `mcp.json`：
+当使用 Agent 客户端时，可以这样配置 `mcp.json`：
 
 ```json
 {
@@ -36,7 +36,7 @@ uvx git+https://github.com/ILXR/remote-git-mcp.git --transport stdio
       "command": "uvx git+https://github.com/ILXR/remote-git-mcp.git --transport stdio",
       "env": {
         "GIT_REPO_URL": "Git仓库URL(包含认证信息)",
-        "WORKSPACE": "本地仓库路径(已存在时 GIT_REPO_URL 可以填空字符串)"
+        "WORKSPACE": "本地仓库绝对路径(已存在时 GIT_REPO_URL 可以填空字符串)"
       }
     }
   }
@@ -45,21 +45,46 @@ uvx git+https://github.com/ILXR/remote-git-mcp.git --transport stdio
 
 ### 使用 uv 本地安装 (开发环境推荐)
 
-克隆仓库后安装到当前目录的虚拟环境中 (使用 `uv` 管理, 不会污染全局环境):
+克隆仓库后同步虚拟环境并配置 `.env` 文件
+
 
 ```bash
 git clone https://github.com/ILXR/remote-git-mcp.git
 cd remote-git-mcp
 uv sync
-./install_local.sh
-```
-
-注意需要配置 `.env` 文件, 然后查看命令行参数:
-
-```bash
 # 复制后自行配置 .env 文件
 cp .env.example .env
-remote-git-mcp -h
+```
+
+可以安装到当前目录的虚拟环境中 (使用 `uv` 管理, 不会污染全局环境):
+
+```bash
+./install_local.sh
+uv run remote-git-mcp -h
+```
+
+如果不安装的话，也可以直接运行脚本
+
+```bash
+uv run python remote_git_mcp/main.py -h
+```
+
+在本地运行一般直接传入 streamable-http 模式:
+
+```bash
+uv run python remote_git_mcp/main.py --transport streamable-http
+```
+
+然后在 `mcp.json` 中配置:
+
+```json
+{
+  "mcpServers": {
+    "remote-git-mcp": {
+      "url": "http://127.0.0.1:8999/mcp"
+    }
+  }
+}
 ```
 
 ## MCP 工具说明
@@ -129,28 +154,6 @@ remote-git-mcp -h
 ### 4. git_remote_branches - 分支列表
 
 获取所有远程分支列表, 无参数
-
-## 返回格式
-
-### 成功响应
-
-所有工具都返回结构化的 JSON 数据：
-
-```json
-{
-  "total": 100,
-  "num_range": [0, 50],
-  "results": [...] // 或 "files": [...] 或 "branches": [...]
-}
-```
-
-### 错误响应
-
-```json
-{
-  "message": "错误描述信息"
-}
-```
 
 ## 项目结构
 
